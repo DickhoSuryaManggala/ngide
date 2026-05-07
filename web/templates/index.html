@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aligator AI - Backtest Results</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { background-color: #f4f7f6; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .dashboard-header { background-color: #ffffff; padding: 20px; border-bottom: 1px solid #dee2e6; margin-bottom: 20px; }
+        .card { border: none; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        .card-title { font-size: 0.9rem; font-weight: 600; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; }
+        .metric-value { font-size: 1.5rem; font-weight: 700; color: #333; }
+        .table-custom { font-size: 0.85rem; }
+        .table-custom th { background-color: #4a4a4a; color: white; border: none; }
+        .table-custom td { border-bottom: 1px solid #eee; }
+        .heatmap-cell { width: 40px; height: 30px; text-align: center; vertical-align: middle; font-size: 0.75rem; color: white; border: 1px solid #fff; }
+        .heatmap-container { overflow-x: auto; }
+        canvas { max-height: 300px; }
+    </style>
+</head>
+<body>
+    <div class="dashboard-header d-flex justify-content-between align-items-center">
+        <div>
+            <h4 class="mb-0 text-primary">🐊 Diko Ganteng v1.226.0 - Backtest Results</h4>
+            <small class="text-muted">Strategies: Aligator-AI-TWAP | Run started: {{ transactions[0].timestamp if transactions else 'N/A' }}</small>
+        </div>
+        <div class="d-flex gap-3 align-items-center">
+            <span class="badge bg-{{ 'success' if live_stats.status == 'ONLINE' else 'danger' }} p-2">TERMINAL: {{ live_stats.status }}</span>
+            <span class="badge bg-{{ 'primary' if live_stats.sentiment == 'BULLISH' else ('danger' if live_stats.sentiment == 'BEARISH' else 'secondary') }} p-2">
+                SENTIMENT: {{ live_stats.sentiment }} ({{ live_stats.sentiment_score }})
+            </span>
+            <span class="badge bg-{{ 'success' if live_stats.circuit_breaker == 'SAFE' else 'warning text-dark' }} p-2">RISK: {{ live_stats.circuit_breaker }}</span>
+            <span class="badge bg-info p-2">ACTIVE TRADES: {{ live_stats.active_trades }}</span>
+        </div>
+    </div>
+
+    <div class="container-fluid px-4">
+        <!-- Top Stats Row -->
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card p-3">
+                    <h6 class="card-title">Run Information</h6>
+                    <table class="table table-sm table-custom">
+                        <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+                        <tbody>
+                            <tr><td>Run ID</td><td>{{ transactions[0].id if transactions else 'N/A' }}</td></tr>
+                            <tr><td>Backtest start</td><td>{{ chart_data.equity.labels[0] if chart_data.equity else 'N/A' }}</td></tr>
+                            <tr><td>Backtest end</td><td>{{ chart_data.equity.labels[-1] if chart_data.equity else 'N/A' }}</td></tr>
+                            <tr><td>Total events</td><td>{{ ai_stats.total_trades * 2 }}</td></tr>
+                            <tr><td>Total orders</td><td>{{ ai_stats.total_trades }}</td></tr>
+                            <tr><td>Total positions</td><td>{{ ai_stats.total_trades }}</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card p-3">
+                    <h6 class="card-title">Performance Statistics</h6>
+                    <table class="table table-sm table-custom">
+                        <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+                        <tbody>
+                            <tr><td>PnL (total)</td><td>${{ "%.2f"|format(ai_stats.metrics.event_driven['Total Return'] * 100) }}</td></tr>
+                            <tr><td>PnL% (total)</td><td class="{{ 'text-success' if ai_stats.metrics.event_driven['Total Return'] > 0 else 'text-danger' }}">{{ "%.2f"|format(ai_stats.metrics.event_driven['Total Return']) }}%</td></tr>
+                            <tr><td>Sharpe Ratio</td><td>{{ "%.2f"|format(ai_stats.metrics.event_driven['Sharpe Ratio']) }}</td></tr>
+                            <tr><td>Max Drawdown</td><td class="text-danger">{{ "%.2f"|format(ai_stats.metrics.event_driven['Max Drawdown']) }}%</td></tr>
+                            <tr><td>Win Rate</td><td>{{ "%.2f"|format(ai_stats.metrics.event_driven['Win Rate']) }}%</td></tr>
+                            <tr><td>Benchmark Return</td><td>{{ "%.2f"|format(ai_stats.metrics.benchmark['Buy & Hold Return']) }}%</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Charts Row -->
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card p-3">
+                    <h6 class="card-title text-center">Equity Curve</h6>
+                    <canvas id="equityChart"></canvas>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card p-3">
+                    <h6 class="card-title text-center">Drawdown</h6>
+                    <canvas id="drawdownChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Secondary Charts Row -->
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card p-3">
+                    <h6 class="card-title text-center">Monthly Returns (%)</h6>
+                    <div class="heatmap-container">
+                        <table class="table table-sm text-center">
+                            <thead>
+                                <tr>
+                                    <th>Year</th>
+                                    {% for m in ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] %}
+                                    <th>{{ m }}</th>
+                                    {% endfor %}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% set years = [] %}
+                                {% for m_data in chart_data.monthly %}
+                                    {% if m_data.year not in years %}
+                                        {% set _ = years.append(m_data.year) %}
+                                    {% endif %}
+                                {% endfor %}
+                                
+                                {% for year in years %}
+                                <tr>
+                                    <td class="fw-bold">{{ year }}</td>
+                                    {% for m in ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] %}
+                                        {% set val = 0 %}
+                                        {% for m_data in chart_data.monthly %}
+                                            {% if m_data.year == year and m_data.month == m %}
+                                                {% set val = m_data.return %}
+                                            {% endif %}
+                                        {% endfor %}
+                                        
+                                        {% if val > 0 %}
+                                            {% set alpha = val/10 if val/10 < 1 else 1 %}
+                                            {% set bg_color = 'rgba(0, 128, 0, ' ~ alpha ~ ')' %}
+                                        {% elif val < 0 %}
+                                            {% set alpha = -val/10 if -val/10 < 1 else 1 %}
+                                            {% set bg_color = 'rgba(255, 0, 0, ' ~ alpha ~ ')' %}
+                                        {% else %}
+                                            {% set bg_color = 'rgba(128, 128, 128, 0.1)' %}
+                                        {% endif %}
+                                        
+                                        <td class="heatmap-cell" data-bg-color="{{ bg_color }}">
+                                            {{ val if val != 0 else '-' }}
+                                        </td>
+                                    {% endfor %}
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card p-3">
+                    <h6 class="card-title text-center">Returns Distribution</h6>
+                    <canvas id="distChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Final Row -->
+        <div class="row">
+            <div class="col-md-6">
+                <div class="card p-3">
+                    <h6 class="card-title text-center">Rolling Sharpe Ratio (60-day)</h6>
+                    <canvas id="sharpeChart"></canvas>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card p-3">
+                    <h6 class="card-title text-center">Yearly Returns</h6>
+                    <canvas id="yearlyChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="chart-data-source" data-charts='{{ chart_data|tojson|safe }}' style="display:none;"></div>
+
+    <script>
+        // Apply heatmap colors from data attributes
+        document.querySelectorAll('.heatmap-cell').forEach(cell => {
+            cell.style.backgroundColor = cell.dataset.bgColor;
+        });
+
+        const chartData = JSON.parse(document.getElementById('chart-data-source').dataset.charts);
+
+        // Equity Chart
+        new Chart(document.getElementById('equityChart'), {
+            type: 'line',
+            data: {
+                labels: chartData.equity.labels,
+                datasets: [{
+                    label: 'Equity',
+                    data: chartData.equity.data,
+                    borderColor: '#333',
+                    borderWidth: 1.5,
+                    fill: false,
+                    pointRadius: 0
+                }]
+            },
+            options: { responsive: true, plugins: { legend: { display: false } } }
+        });
+
+        // Drawdown Chart
+        new Chart(document.getElementById('drawdownChart'), {
+            type: 'line',
+            data: {
+                labels: chartData.drawdown.labels,
+                datasets: [{
+                    label: 'Drawdown (%)',
+                    data: chartData.drawdown.data,
+                    backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                    borderColor: 'rgba(255, 99, 132, 1)',
+                    borderWidth: 1,
+                    fill: true,
+                    pointRadius: 0
+                }]
+            },
+            options: { responsive: true, plugins: { legend: { display: false } } }
+        });
+
+        // Distribution Chart (Histogram)
+        const histData = chartData.distribution;
+        const bins = 20;
+        const min = Math.min(...histData);
+        const max = Math.max(...histData);
+        const binWidth = (max - min) / bins;
+        const counts = new Array(bins).fill(0);
+        histData.forEach(v => {
+            const idx = Math.min(Math.floor((v - min) / binWidth), bins - 1);
+            counts[idx]++;
+        });
+
+        new Chart(document.getElementById('distChart'), {
+            type: 'bar',
+            data: {
+                labels: counts.map((_, i) => (min + i * binWidth).toFixed(2)),
+                datasets: [{
+                    label: 'Frequency',
+                    data: counts,
+                    backgroundColor: '#555'
+                }]
+            },
+            options: { responsive: true, plugins: { legend: { display: false } } }
+        });
+
+        // Rolling Sharpe Chart
+        new Chart(document.getElementById('sharpeChart'), {
+            type: 'line',
+            data: {
+                labels: chartData.rolling_sharpe.labels,
+                datasets: [{
+                    label: 'Sharpe Ratio',
+                    data: chartData.rolling_sharpe.data,
+                    borderColor: '#007bff',
+                    borderWidth: 1.5,
+                    fill: false,
+                    pointRadius: 0
+                }]
+            },
+            options: { responsive: true, plugins: { legend: { display: false } } }
+        });
+
+        // Yearly Returns Chart
+        new Chart(document.getElementById('yearlyChart'), {
+            type: 'bar',
+            data: {
+                labels: chartData.yearly.labels,
+                datasets: [{
+                    label: 'Return (%)',
+                    data: chartData.yearly.data,
+                    backgroundColor: chartData.yearly.data.map(v => v > 0 ? '#28a745' : '#dc3545')
+                }]
+            },
+            options: { responsive: true, plugins: { legend: { display: false } } }
+        });
+    </script>
+</body>
+</html>

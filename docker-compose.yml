@@ -1,0 +1,24 @@
+services:
+  trading-bot:
+    build: .
+    container_name: aligator_trading_bot
+    volumes:
+      - .:/app
+      - trading_data:/app/data
+    environment:
+      - DISPLAY=${DISPLAY}
+    network_mode: "host" # Useful for X11 forwarding
+
+  jupyter:
+    image: jupyter/scipy-notebook:latest
+    container_name: aligator_jupyter
+    volumes:
+      - .:/home/jovyan/work
+    ports:
+      - "8888:8888"
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - JUPYTER_TOKEN=aligator
+
+volumes:
+  trading_data:

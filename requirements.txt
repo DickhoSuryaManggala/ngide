@@ -1,0 +1,13 @@
+pandas
+numpy
+MetaTrader5
+scikit-learn
+joblib
+vaderSentiment
+yfinance
+Flask
+matplotlib
+seaborn
+tensorflow
+scikit-learn
+joblib

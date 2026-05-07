@@ -1,0 +1,578 @@
+//@version=6
+indicator("Alligator & Supertrend", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// --- Supertrend Inputs ---
+group_st = "Supertrend"
+atrPeriod = input.int(10, "ATR Length", minval=1, group=group_st)
+factor = input.float(3.0, "Factor", minval=0.01, step=0.01, group=group_st)
+
+// --- Alligator Inputs ---
+group_ali = "Alligator"
+ali_src = input.source(hl2, "Alligator Source", group=group_ali)
+jaw_len = input.int(13, "Alligator Jaw Length", group=group_ali)
+jaw_off = input.int(8, "Alligator Jaw Offset", group=group_ali)
+teeth_len = input.int(8, "Alligator Teeth Length", group=group_ali)
+teeth_off = input.int(5, "Alligator Teeth Offset", group=group_ali)
+lips_len = input.int(5, "Alligator Lips Length", group=group_ali)
+lips_off = input.int(3, "Alligator Lips Offset", group=group_ali)
+
+// --- SL & TP Inputs ---
+group_exit   = "SL & TP Settings"
+use_sl_tp    = input.bool(true,  "Show SL/TP Targets",   group=group_exit)
+target_mode  = input.string("ATR Multiplier", "Target Mode",
+     options=["ATR Multiplier", "Pips"], group=group_exit,
+     tooltip="ATR Multiplier: SL/TP dihitung dari ATR.\nPips: SL/TP menggunakan nilai pips tetap.")
+sl_atr_len   = input.int(14,     "ATR Length for SL/TP", group=group_exit)
+
+// --- ATR Multiplier Mode ---
+sl_mult      = input.float(1.5,  "SL ATR Multiplier",    group=group_exit, step=0.1)
+tp1_mult     = input.float(1.5,  "TP1 ATR Multiplier",   group=group_exit, step=0.1)
+tp2_mult     = input.float(3.0,  "TP2 ATR Multiplier",   group=group_exit, step=0.1)
+tp3_mult     = input.float(4.5,  "TP3 ATR Multiplier",   group=group_exit, step=0.1)
+
+// --- Pips Mode ---
+pip_size     = input.float(0.0001, "Pip Size (e.g. 0.0001 for FX, 0.01 for JPY)", group=group_exit,
+     step=0.00001, minval=0.00001,
+     tooltip="Ukuran 1 pip. FX standar = 0.0001, Pasangan JPY = 0.01, XAU/USD = 0.1")
+sl_pips      = input.float(20.0,  "SL (Pips)",   group=group_exit, minval=0.1, step=0.5)
+tp1_pips     = input.float(20.0,  "TP1 (Pips)",  group=group_exit, minval=0.1, step=0.5)
+tp2_pips     = input.float(40.0,  "TP2 (Pips)",  group=group_exit, minval=0.1, step=0.5)
+tp3_pips     = input.float(60.0,  "TP3 (Pips)",  group=group_exit, minval=0.1, step=0.5)
+
+// --- Win Rate Optimization Filters ---
+group_flt = "Win Rate Filters"
+use_ema_filter  = input.bool(true,  "EMA Trend Filter (only trade with trend)", group=group_flt)
+ema_len         = input.int(200,    "EMA Length",                               group=group_flt, minval=10)
+use_adx_filter  = input.bool(true,  "ADX Filter (only trade in trending market)",group=group_flt)
+adx_len         = input.int(14,     "ADX Length",                               group=group_flt, minval=1)
+adx_thresh      = input.int(20,     "ADX Minimum Threshold",                    group=group_flt, minval=5, maxval=50)
+use_rsi_filter  = input.bool(true,  "RSI Extreme Filter (avoid reversal zones)",group=group_flt)
+rsi_len         = input.int(14,     "RSI Length",                               group=group_flt, minval=1)
+rsi_ob          = input.int(70,     "RSI Overbought Level",                     group=group_flt, minval=60, maxval=90)
+rsi_os          = input.int(30,     "RSI Oversold Level",                       group=group_flt, minval=10, maxval=40)
+use_atr_filter  = input.bool(true,  "ATR Volatility Filter (avoid choppy market)",group=group_flt)
+atr_vol_len     = input.int(14,     "ATR Volatility Length",                    group=group_flt, minval=1)
+atr_vol_mult    = input.float(0.5,  "Min ATR (× ATR MA)",                      group=group_flt, minval=0.1, step=0.1)
+use_confirm     = input.bool(true,  "Candle Close Confirmation (reduce false signals)", group=group_flt)
+
+// --- Advanced Probability Filters (Confluence Scoring) ---
+// Bukan AND semua — sinyal masuk jika skor ≥ min_adv_score
+group_adv = "Advanced Filters (Confluence Score)"
+min_adv_score    = input.int(2,      "Min Score Required (out of 5)", minval=0, maxval=5, group=group_adv,
+     tooltip="Berapa filter advanced yang harus setuju. 0=nonaktif semua, 5=harus semua setuju.\nDefault 2 = cukup 2 dari 5 filter setuju → lebih banyak sinyal berkualitas.")
+use_htf_filter   = input.bool(true,  "[+1] HTF Trend Filter",                         group=group_adv)
+htf_tf           = input.timeframe("4H", "HTF Timeframe",                             group=group_adv,
+     tooltip="Pilih TF lebih tinggi dari chart aktif. Misal chart 3M → pilih 1H atau 4H")
+use_vol_filter   = input.bool(true,  "[+1] Volume Confirmation",                      group=group_adv)
+vol_len          = input.int(20,     "Volume SMA Length",  minval=5,                  group=group_adv)
+vol_mult         = input.float(0.8,  "Min Volume (× SMA)", minval=0.1, step=0.1,     group=group_adv,
+     tooltip="Hanya masuk jika volume bar ini ≥ vol_mult × rata-rata volume")
+use_recency      = input.bool(true,  "[+1] ST Recency (early-trend entry)",           group=group_adv)
+recency_bars     = input.int(8,      "Max Bars After ST Flip", minval=1, maxval=30,   group=group_adv)
+use_body_filter  = input.bool(true,  "[+1] Candle Body Strength (avoid doji)",       group=group_adv)
+body_ratio_min   = input.float(0.3,  "Min Body/Range Ratio", minval=0.1, maxval=0.9, step=0.05, group=group_adv,
+     tooltip="0.3 = body ≥ 30% range candle")
+use_macd_filter  = input.bool(true,  "[+1] MACD Momentum Direction",                 group=group_adv)
+macd_fast        = input.int(12,     "MACD Fast",   minval=2,                         group=group_adv)
+macd_slow        = input.int(26,     "MACD Slow",   minval=3,                         group=group_adv)
+macd_sig         = input.int(9,      "MACD Signal", minval=2,                         group=group_adv)
+
+// --- Table Inputs ---
+group_tbl         = "Table Settings"
+show_entry_table  = input.bool(true, "Show Entry Table",  group=group_tbl)
+show_metric_table = input.bool(true, "Show Metric Table", group=group_tbl)
+tbl_pos           = input.string("Top Right", "Entry Table Position",
+     options=["Top Right","Top Left","Bottom Right","Bottom Left"], group=group_tbl)
+
+// =============================================================================
+// --- Supertrend Calculation ---
+// =============================================================================
+[stVal, stDir] = ta.supertrend(factor, atrPeriod)
+stVal := barstate.isfirst ? na : stVal
+stUp = stDir < 0
+upTrend   = plot(stDir < 0 ? stVal : na, "Up Trend",   color=color.green, style=plot.style_linebr)
+downTrend = plot(stDir < 0 ? na : stVal, "Down Trend", color=color.red,   style=plot.style_linebr)
+bodyMiddle = plot(barstate.isfirst ? na : (open + close) / 2, "Body Middle", display=display.none)
+
+fill(bodyMiddle, upTrend,   title="Uptrend background",   color=color.new(color.green, 90), fillgaps=false)
+fill(bodyMiddle, downTrend, title="Downtrend background",  color=color.new(color.red,   90), fillgaps=false)
+
+// =============================================================================
+// --- Alligator Calculation ---
+// =============================================================================
+ali_jaw    = ta.rma(ali_src, jaw_len)
+ali_teeth  = ta.rma(ali_src, teeth_len)
+ali_lips   = ta.rma(ali_src, lips_len)
+ali_jaw_s  = ali_jaw[jaw_off]
+ali_teeth_s = ali_teeth[teeth_off]
+ali_lips_s  = ali_lips[lips_off]
+ali_bull = ali_lips_s > ali_teeth_s and ali_teeth_s > ali_jaw_s
+ali_bear = ali_lips_s < ali_teeth_s and ali_teeth_s < ali_jaw_s
+
+plot(ali_jaw_s,   "Alligator Jaw",   color=color.blue,   linewidth=2)
+plot(ali_teeth_s, "Alligator Teeth", color=color.orange, linewidth=2)
+plot(ali_lips_s,  "Alligator Lips",  color=color.green,  linewidth=2)
+
+// =============================================================================
+// --- Win Rate Filters Calculation ---
+// =============================================================================
+// 1. EMA Trend Filter
+ema_val      = ta.ema(close, ema_len)
+ema_bull     = close > ema_val
+ema_bear     = close < ema_val
+plot(ema_val, "EMA", color=color.new(color.white, 50), linewidth=1)
+
+// 2. ADX Filter
+[diPlus, diMinus, adxVal] = ta.dmi(adx_len, adx_len)
+adx_ok = adxVal >= adx_thresh
+
+// 3. RSI Filter
+rsi_val  = ta.rsi(close, rsi_len)
+rsi_bull_ok = rsi_val < rsi_ob   // not overbought for long
+rsi_bear_ok = rsi_val > rsi_os   // not oversold for short
+
+// 4. ATR Volatility Filter
+atr_vol     = ta.atr(atr_vol_len)
+atr_vol_ma  = ta.sma(atr_vol, atr_vol_len)
+atr_ok      = atr_vol >= atr_vol_ma * atr_vol_mult
+
+// =============================================================================
+// --- Advanced Filters Calculation ---
+// =============================================================================
+// 5. HTF Trend Filter
+[htf_stVal, htf_stDir] = request.security(syminfo.tickerid, htf_tf, ta.supertrend(factor, atrPeriod), lookahead=barmerge.lookahead_off)
+htf_bull = htf_stDir < 0
+htf_bear = htf_stDir > 0
+
+// 6. Volume Filter
+vol_sma   = ta.sma(volume, vol_len)
+vol_ok    = volume >= vol_sma * vol_mult
+
+// 7. Supertrend Recency Filter (bars since last ST flip)
+var int bars_since_flip = 0
+bool st_flipped = stDir != stDir[1]
+bars_since_flip := st_flipped ? 0 : bars_since_flip + 1
+recency_ok = bars_since_flip <= recency_bars
+
+// 8. Candle Body Strength Filter
+candle_range = high - low
+candle_body  = math.abs(close - open)
+body_ok      = candle_range > 0 and (candle_body / candle_range) >= body_ratio_min
+
+// 9. MACD Momentum Filter
+[macd_line, macd_signal, _macd_hist] = ta.macd(close, macd_fast, macd_slow, macd_sig)
+macd_bull_ok = macd_line > macd_signal
+macd_bear_ok = macd_line < macd_signal
+
+// =============================================================================
+// --- Entry Logic ---
+// =============================================================================
+buyCondition  = stUp and ali_bull
+sellCondition = not stUp and ali_bear
+
+// Apply filters
+bool flt_ema_buy  = not use_ema_filter or ema_bull
+bool flt_ema_sell = not use_ema_filter or ema_bear
+bool flt_adx      = not use_adx_filter or adx_ok
+bool flt_atr      = not use_atr_filter or atr_ok
+bool flt_rsi_buy  = not use_rsi_filter or rsi_bull_ok
+bool flt_rsi_sell = not use_rsi_filter or rsi_bear_ok
+
+// Advanced filters — Confluence Scoring System
+// Setiap filter yang aktif DAN setuju menambah +1 poin
+adv_score_buy  = (use_htf_filter  and htf_bull     ? 1 : 0)
+              + (use_vol_filter   and vol_ok        ? 1 : 0)
+              + (use_recency      and recency_ok    ? 1 : 0)
+              + (use_body_filter  and body_ok       ? 1 : 0)
+              + (use_macd_filter  and macd_bull_ok  ? 1 : 0)
+
+adv_score_sell = (use_htf_filter  and htf_bear     ? 1 : 0)
+              + (use_vol_filter   and vol_ok        ? 1 : 0)
+              + (use_recency      and recency_ok    ? 1 : 0)
+              + (use_body_filter  and body_ok       ? 1 : 0)
+              + (use_macd_filter  and macd_bear_ok  ? 1 : 0)
+
+buyFiltered  = buyCondition  and flt_ema_buy  and flt_adx and flt_rsi_buy  and flt_atr
+             and adv_score_buy  >= min_adv_score
+sellFiltered = sellCondition and flt_ema_sell and flt_adx and flt_rsi_sell and flt_atr
+             and adv_score_sell >= min_adv_score
+
+// Candle close confirmation: use previous bar's confirmed condition
+bool rawBuySignal  = use_confirm ? (buyFiltered[1]  and not buyFiltered[2])  : (buyFiltered  and not buyFiltered[1])
+bool rawSellSignal = use_confirm ? (sellFiltered[1] and not sellFiltered[2]) : (sellFiltered and not sellFiltered[1])
+
+// =============================================================================
+// --- Trade State Tracking ---
+// =============================================================================
+var float trade_sl          = na
+var float trade_tp1         = na
+var float trade_tp2         = na
+var float trade_tp3         = na
+var int   trade_dir         = 0
+var bool  trade_active      = false
+var float trade_entry_price = na
+
+var int stat_total_trades = 0
+var int stat_cnt_tp1      = 0
+var int stat_cnt_tp2      = 0
+var int stat_cnt_tp3      = 0
+var int stat_cnt_sl       = 0
+
+var bool curr_hit_tp1 = false
+var bool curr_hit_tp2 = false
+var bool curr_hit_tp3 = false
+
+// Consecutive win/loss tracking
+var int cons_win_cur  = 0
+var int cons_win_max  = 0
+var int cons_loss_cur = 0
+var int cons_loss_max = 0
+
+// =============================================================================
+// --- Check for Exit ---
+// =============================================================================
+if trade_active
+    bool hit_sl  = false
+    bool hit_tp1 = false
+    bool hit_tp2 = false
+    bool hit_tp3 = false
+
+    if trade_dir == 1
+        if low  <= trade_sl
+            hit_sl  := true
+        if high >= trade_tp1
+            hit_tp1 := true
+        if high >= trade_tp2
+            hit_tp2 := true
+        if high >= trade_tp3
+            hit_tp3 := true
+
+    if trade_dir == -1
+        if high >= trade_sl
+            hit_sl  := true
+        if low  <= trade_tp1
+            hit_tp1 := true
+        if low  <= trade_tp2
+            hit_tp2 := true
+        if low  <= trade_tp3
+            hit_tp3 := true
+
+    bool sl_first_in_bar = false
+    bool tp_hit_in_bar   = hit_tp1 or hit_tp2 or hit_tp3
+
+    if hit_sl and tp_hit_in_bar
+        if trade_dir == 1
+            sl_first_in_bar := close > open ? true : false
+        else
+            sl_first_in_bar := close < open ? true : false
+    else
+        if hit_sl
+            sl_first_in_bar := true
+
+    bool record_loss = sl_first_in_bar and not (curr_hit_tp1 or curr_hit_tp2 or curr_hit_tp3)
+
+    if record_loss
+        stat_cnt_sl   += 1
+        cons_loss_cur += 1
+        cons_win_cur  := 0
+        if cons_loss_cur > cons_loss_max
+            cons_loss_max := cons_loss_cur
+        label.new(bar_index, trade_sl, "SL Hit",
+             color=color.red, textcolor=color.white,
+             style=trade_dir == 1 ? label.style_label_up : label.style_label_down,
+             size=size.small)
+        trade_active := false
+        trade_dir    := 0
+    else
+        if hit_tp1 and not curr_hit_tp1
+            stat_cnt_tp1  += 1
+            curr_hit_tp1  := true
+            cons_win_cur  += 1
+            cons_loss_cur := 0
+            if cons_win_cur > cons_win_max
+                cons_win_max := cons_win_cur
+            label.new(bar_index, trade_tp1, "TP1 Hit",
+                 color=color.green, textcolor=color.white,
+                 style=trade_dir == 1 ? label.style_label_down : label.style_label_up,
+                 size=size.small)
+
+        if hit_tp2 and not curr_hit_tp2
+            stat_cnt_tp2 += 1
+            curr_hit_tp2 := true
+            label.new(bar_index, trade_tp2, "TP2 Hit",
+                 color=color.green, textcolor=color.white,
+                 style=trade_dir == 1 ? label.style_label_down : label.style_label_up,
+                 size=size.small)
+
+        if hit_tp3 and not curr_hit_tp3
+            stat_cnt_tp3 += 1
+            curr_hit_tp3 := true
+            label.new(bar_index, trade_tp3, "TP3 Hit",
+                 color=color.green, textcolor=color.white,
+                 style=trade_dir == 1 ? label.style_label_down : label.style_label_up,
+                 size=size.small)
+            trade_active := false
+            trade_dir    := 0
+
+        if trade_active and hit_sl
+            trade_active := false
+            trade_dir    := 0
+
+// =============================================================================
+// --- Visual SL/TP Lines & Labels ---
+// =============================================================================
+atrVal = ta.atr(sl_atr_len)
+
+// --- Hitung jarak SL/TP berdasarkan mode ---
+use_pips     = target_mode == "Pips"
+f_sl_dist()  => use_pips ? sl_pips  * pip_size : atrVal * sl_mult
+f_tp1_dist() => use_pips ? tp1_pips * pip_size : atrVal * tp1_mult
+f_tp2_dist() => use_pips ? tp2_pips * pip_size : atrVal * tp2_mult
+f_tp3_dist() => use_pips ? tp3_pips * pip_size : atrVal * tp3_mult
+
+if use_sl_tp and (rawBuySignal or rawSellSignal)
+    float entry_price = close
+    float sl_price    = na
+    float tp1_price   = na
+    float tp2_price   = na
+    float tp3_price   = na
+    string txt_entry  = ""
+    color col_entry   = na
+    color col_sl      = color.red
+    color col_tp      = color.green
+
+    if rawBuySignal
+        sl_price  := entry_price - f_sl_dist()
+        tp1_price := entry_price + f_tp1_dist()
+        tp2_price := entry_price + f_tp2_dist()
+        tp3_price := entry_price + f_tp3_dist()
+        txt_entry := "Buy"
+        col_entry := color.blue
+
+    if rawSellSignal
+        sl_price  := entry_price + f_sl_dist()
+        tp1_price := entry_price - f_tp1_dist()
+        tp2_price := entry_price - f_tp2_dist()
+        tp3_price := entry_price - f_tp3_dist()
+        txt_entry := "Sell"
+        col_entry := color.blue
+
+    line.new(bar_index, entry_price, bar_index + 10, entry_price, color=color.gray, style=line.style_solid,  width=1)
+    label.new(bar_index + 10, entry_price, txt_entry + "\n" + str.tostring(entry_price, format.mintick),
+         style=label.style_label_left, color=col_entry, textcolor=color.white, size=size.small)
+
+    line.new(bar_index, sl_price, bar_index + 10, sl_price, color=col_sl, style=line.style_solid, width=2)
+    label.new(bar_index + 10, sl_price, "SL\n" + str.tostring(sl_price, format.mintick),
+         style=label.style_label_left, color=col_sl, textcolor=color.white, size=size.tiny)
+
+    line.new(bar_index, tp1_price, bar_index + 10, tp1_price, color=col_tp, style=line.style_dashed, width=1)
+    label.new(bar_index + 10, tp1_price, "TP1\n" + str.tostring(tp1_price, format.mintick),
+         style=label.style_label_left, color=col_tp, textcolor=color.white, size=size.tiny)
+
+    line.new(bar_index, tp2_price, bar_index + 10, tp2_price, color=col_tp, style=line.style_dashed, width=1)
+    label.new(bar_index + 10, tp2_price, "TP2\n" + str.tostring(tp2_price, format.mintick),
+         style=label.style_label_left, color=col_tp, textcolor=color.white, size=size.tiny)
+
+    line.new(bar_index, tp3_price, bar_index + 10, tp3_price, color=col_tp, style=line.style_dashed, width=1)
+    label.new(bar_index + 10, tp3_price, "TP3\n" + str.tostring(tp3_price, format.mintick),
+         style=label.style_label_left, color=col_tp, textcolor=color.white, size=size.tiny)
+
+    trade_sl          := sl_price
+    trade_tp1         := tp1_price
+    trade_tp2         := tp2_price
+    trade_tp3         := tp3_price
+    trade_entry_price := entry_price
+    trade_dir         := rawBuySignal ? 1 : -1
+    trade_active      := true
+
+    curr_hit_tp1 := false
+    curr_hit_tp2 := false
+    curr_hit_tp3 := false
+
+    stat_total_trades += 1
+
+// =============================================================================
+// --- Helper: table position from string ---
+// =============================================================================
+f_pos(p) =>
+    switch p
+        "Top Right"    => position.top_right
+        "Top Left"     => position.top_left
+        "Bottom Right" => position.bottom_right
+        =>               position.bottom_left
+
+f_metric_pos(p) =>
+    switch p
+        "Top Right"    => position.bottom_right
+        "Top Left"     => position.bottom_left
+        "Bottom Right" => position.top_right
+        =>               position.top_left
+
+// =============================================================================
+// --- ENTRY TABLE ---
+// =============================================================================
+var table entry_tbl = na
+
+if barstate.islast and show_entry_table
+    entry_tbl := table.new(f_pos(tbl_pos), 2, 6,
+         bgcolor      = color.new(color.black, 10),
+         border_color = color.new(color.gray,  40),
+         border_width = 1,
+         frame_color  = color.new(color.gray,  30),
+         frame_width  = 1)
+
+    string dir_lbl = trade_active ? (trade_dir == 1 ? "LONG Active" : "SHORT Active") : "No Active Trade"
+    color  dir_bg  = trade_active ? (trade_dir == 1 ? color.new(color.teal, 10) : color.new(color.red, 20)) : color.new(color.gray, 40)
+
+    // Row 0 – Header
+    table.cell(entry_tbl, 0, 0, dir_lbl, text_color=color.white, text_size=size.small, bgcolor=dir_bg, text_halign=text.align_center)
+    table.cell(entry_tbl, 1, 0, "Price",  text_color=color.white, text_size=size.small, bgcolor=dir_bg, text_halign=text.align_center)
+
+    color cell_bg = color.new(color.black, 20)
+
+    // Row 1 – Entry
+    string ep_str = trade_active ? str.tostring(trade_entry_price, format.mintick) : "—"
+    table.cell(entry_tbl, 0, 1, "Entry", text_color=color.white, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(entry_tbl, 1, 1, ep_str,  text_color=color.white, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+
+    // Row 2 – SL
+    string sl_str = trade_active ? str.tostring(trade_sl, format.mintick) : "—"
+    table.cell(entry_tbl, 0, 2, "SL",   text_color=color.red,  text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(entry_tbl, 1, 2, sl_str, text_color=color.red,  text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+
+    // Row 3 – TP1
+    string tp1_str = trade_active ? str.tostring(trade_tp1, format.mintick) : "—"
+    table.cell(entry_tbl, 0, 3, "TP1",    text_color=color.lime, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(entry_tbl, 1, 3, tp1_str,  text_color=color.lime, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+
+    // Row 4 – TP2
+    string tp2_str = trade_active ? str.tostring(trade_tp2, format.mintick) : "—"
+    table.cell(entry_tbl, 0, 4, "TP2",    text_color=color.lime, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(entry_tbl, 1, 4, tp2_str,  text_color=color.lime, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+
+    // Row 5 – TP3
+    string tp3_str = trade_active ? str.tostring(trade_tp3, format.mintick) : "—"
+    table.cell(entry_tbl, 0, 5, "TP3",    text_color=color.lime, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(entry_tbl, 1, 5, tp3_str,  text_color=color.lime, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+
+// =============================================================================
+// --- METRIC TABLE ---
+// =============================================================================
+var table metric_tbl = na
+
+f_wr(wins, total) =>
+    total > 0 ? wins / total * 100.0 : 0.0
+
+// Hitung RR ratio (berlaku untuk kedua mode)
+f_rr_ratio(tp_dist, sl_dist) =>
+    sl_dist > 0 ? tp_dist / sl_dist : 0.0
+
+f_rr_str(tp_dist, sl_dist) =>
+    "1:" + str.tostring(f_rr_ratio(tp_dist, sl_dist), "#.##")
+
+f_best_rr() =>
+    float sl_d  = use_pips ? sl_pips  : sl_mult
+    float tp1_d = use_pips ? tp1_pips : tp1_mult
+    float tp2_d = use_pips ? tp2_pips : tp2_mult
+    float tp3_d = use_pips ? tp3_pips : tp3_mult
+    string best = "—"
+    if stat_cnt_tp3 > 0
+        best := "TP3 (1:" + str.tostring(tp3_d / sl_d, "#.##") + ")"
+    else if stat_cnt_tp2 > 0
+        best := "TP2 (1:" + str.tostring(tp2_d / sl_d, "#.##") + ")"
+    else if stat_cnt_tp1 > 0
+        best := "TP1 (1:" + str.tostring(tp1_d / sl_d, "#.##") + ")"
+    best
+
+if barstate.islast and show_metric_table
+    metric_tbl := table.new(f_metric_pos(tbl_pos), 4, 9,
+         bgcolor      = color.new(color.black, 10),
+         border_color = color.new(color.gray,  40),
+         border_width = 1,
+         frame_color  = color.new(color.gray,  30),
+         frame_width  = 1)
+
+    color hdr_bg   = color.new(color.navy,   20)
+    color cell_bg  = color.new(color.black,  20)
+    color lbl_col  = color.new(color.silver,  0)
+    color win_col  = color.lime
+    color loss_col = color.red
+    color wr_col   = color.yellow
+    color rr_col   = color.new(color.gray, 20)
+
+    // RR display berdasarkan mode aktif
+    float sl_d  = use_pips ? sl_pips  : sl_mult
+    float tp1_d = use_pips ? tp1_pips : tp1_mult
+    float tp2_d = use_pips ? tp2_pips : tp2_mult
+    float tp3_d = use_pips ? tp3_pips : tp3_mult
+    string rr1 = "1:" + str.tostring(tp1_d / sl_d, "#.##")
+    string rr2 = "1:" + str.tostring(tp2_d / sl_d, "#.##")
+    string rr3 = "1:" + str.tostring(tp3_d / sl_d, "#.##")
+
+    // Row 0 – Header
+    table.cell(metric_tbl, 0, 0, "Metric", text_color=color.white, text_size=size.small, bgcolor=hdr_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 1, 0, "TP 1",   text_color=color.white, text_size=size.small, bgcolor=hdr_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 2, 0, "TP 2",   text_color=color.white, text_size=size.small, bgcolor=hdr_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 3, 0, "TP 3",   text_color=color.white, text_size=size.small, bgcolor=hdr_bg, text_halign=text.align_center)
+
+    // Row 1 – Target RR
+    table.cell(metric_tbl, 0, 1, "Target RR", text_color=lbl_col, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_left)
+    table.cell(metric_tbl, 1, 1, rr1,          text_color=rr_col,  text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 2, 1, rr2,          text_color=rr_col,  text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 3, 1, rr3,          text_color=rr_col,  text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+
+    // Row 2 – Wins
+    table.cell(metric_tbl, 0, 2, "Wins",                     text_color=lbl_col, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_left)
+    table.cell(metric_tbl, 1, 2, str.tostring(stat_cnt_tp1), text_color=win_col, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 2, 2, str.tostring(stat_cnt_tp2), text_color=win_col, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 3, 2, str.tostring(stat_cnt_tp3), text_color=win_col, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+
+    // Row 3 – Losses
+    table.cell(metric_tbl, 0, 3, "Losses",                   text_color=lbl_col,  text_size=size.small, bgcolor=cell_bg, text_halign=text.align_left)
+    table.cell(metric_tbl, 1, 3, str.tostring(stat_cnt_sl),  text_color=loss_col, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 2, 3, str.tostring(stat_cnt_sl),  text_color=loss_col, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 3, 3, str.tostring(stat_cnt_sl),  text_color=loss_col, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+
+    // Row 4 – Win Rate
+    float wr1 = f_wr(stat_cnt_tp1, stat_total_trades)
+    float wr2 = f_wr(stat_cnt_tp2, stat_total_trades)
+    float wr3 = f_wr(stat_cnt_tp3, stat_total_trades)
+    table.cell(metric_tbl, 0, 4, "Win Rate",                           text_color=lbl_col, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_left)
+    table.cell(metric_tbl, 1, 4, str.tostring(wr1, "#.##") + "%",     text_color=wr_col,  text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 2, 4, str.tostring(wr2, "#.##") + "%",     text_color=wr_col,  text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 3, 4, str.tostring(wr3, "#.##") + "%",     text_color=wr_col,  text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+
+    // Row 5 – Consecutive Wins (merged across TP columns)
+    table.cell(metric_tbl, 0, 5, "Cons. Wins",               text_color=lbl_col, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_left)
+    table.cell(metric_tbl, 1, 5, str.tostring(cons_win_max), text_color=win_col, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 2, 5, "",                          text_color=win_col, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 3, 5, "",                          text_color=win_col, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.merge_cells(metric_tbl, 1, 5, 3, 5)
+
+    // Row 6 – Consecutive Losses (merged across TP columns)
+    table.cell(metric_tbl, 0, 6, "Cons. Loss",                text_color=lbl_col,  text_size=size.small, bgcolor=cell_bg, text_halign=text.align_left)
+    table.cell(metric_tbl, 1, 6, str.tostring(cons_loss_max), text_color=loss_col, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 2, 6, "",                           text_color=loss_col, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 3, 6, "",                           text_color=loss_col, text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.merge_cells(metric_tbl, 1, 6, 3, 6)
+
+    // Row 7 – Best Performing RR (merged across TP columns)
+    table.cell(metric_tbl, 0, 7, "Best Perf. RR", text_color=lbl_col,              text_size=size.small, bgcolor=cell_bg, text_halign=text.align_left)
+    table.cell(metric_tbl, 1, 7, f_best_rr(),      text_color=color.orange,         text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 2, 7, "",               text_color=color.orange,         text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 3, 7, "",               text_color=color.orange,         text_size=size.small, bgcolor=cell_bg, text_halign=text.align_center)
+    table.merge_cells(metric_tbl, 1, 7, 3, 7)
+
+    // Row 8 – Total Trades (merged all columns)
+    string tt_str = "Total Trades: " + str.tostring(stat_total_trades)
+    table.cell(metric_tbl, 0, 8, tt_str, text_color=lbl_col, text_size=size.small, bgcolor=hdr_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 1, 8, "",     text_color=lbl_col, text_size=size.small, bgcolor=hdr_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 2, 8, "",     text_color=lbl_col, text_size=size.small, bgcolor=hdr_bg, text_halign=text.align_center)
+    table.cell(metric_tbl, 3, 8, "",     text_color=lbl_col, text_size=size.small, bgcolor=hdr_bg, text_halign=text.align_center)
+    table.merge_cells(metric_tbl, 0, 8, 3, 8)
+
+// =============================================================================
+// --- Alerts ---
+// =============================================================================
+alertcondition(rawBuySignal,  title="Buy Alert",  message="Alligator + Supertrend Buy Signal")
+alertcondition(rawSellSignal, title="Sell Alert", message="Alligator + Supertrend Sell Signal")
